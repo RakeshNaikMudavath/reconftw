@@ -10,7 +10,7 @@ setup() {
   export MONITOR_MODE=true
   export ALERT_SUPPRESSION=true
   export ALERT_SEEN_FILE="$dir/.incremental/alerts_seen.hashes"
-  mkdir -p "$dir"/{subdomains,webs,nuclei_output,.incremental/history,report,.log}
+  mkdir -p "$dir"/{subdomains,webs,hosts,nuclei_output,.incremental/history,report,.log}
   cd "$dir"
   runtime="1 minutes 0 seconds"
 }
@@ -88,4 +88,30 @@ teardown() {
   latest_dir=".incremental/history/$(readlink .incremental/history/latest)"
   [ -f "$latest_dir/medium_new.txt" ]
   grep -q "b.example.com" "$latest_dir/medium_new.txt"
+}
+
+@test "monitor_snapshot tracks dns, cert, and service drift deltas" {
+  printf 'a.example.com A 1.1.1.1\n' > subdomains/subdomains_dnsregs.txt
+  printf 'a.example.com tls oldcert\n' > subdomains/subdomains_tls.txt
+  printf 'Host: 1.1.1.1 () Ports: 443/open/tcp//https///\n' > hosts/portscan_active.gnmap
+  printf '{"host":"1.1.1.1","service":"https"}\n' > hosts/service_fingerprints.jsonl
+  printf 'a.example.com\n' > subdomains/subdomains.txt
+  printf 'https://a.example.com\n' > webs/webs_all.txt
+  printf '[tpl-c] [http] [critical] https://a.example.com\n' > nuclei_output/critical.txt
+  export MONITOR_CYCLE=1
+  monitor_snapshot
+
+  printf 'b.example.com A 2.2.2.2\n' >> subdomains/subdomains_dnsregs.txt
+  printf 'b.example.com tls newcert\n' >> subdomains/subdomains_tls.txt
+  printf 'Host: 2.2.2.2 () Ports: 8443/open/tcp//https-alt///\n' >> hosts/portscan_active.gnmap
+  printf '{"host":"2.2.2.2","service":"https-alt"}\n' >> hosts/service_fingerprints.jsonl
+  export MONITOR_CYCLE=2
+  run monitor_snapshot
+  [ "$status" -eq 0 ]
+
+  latest_dir=".incremental/history/$(readlink .incremental/history/latest)"
+  [ -f "$latest_dir/delta.json" ]
+  grep -q '"dns_new"' "$latest_dir/delta.json"
+  grep -q '"ports_new"' "$latest_dir/delta.json"
+  grep -q "b.example.com" "$latest_dir/dns_new.txt"
 }

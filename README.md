@@ -205,7 +205,8 @@ reconFTW is packed with features to make reconnaissance thorough and efficient. 
 - **Faraday Integration**: Exports results to [Faraday](https://github.com/infobyte/faraday) for reporting .
 - **AI Report Generation**: Generates reports using local AI models ([reconftw_ai](https://github.com/six2dez/reconftw_ai)).
 - **Quick Rescan Mode**: Skips heavy stages automatically when no new assets are discovered (`--quick-rescan` / `QUICK_RESCAN`).
-- **Hotlist Builder**: Scores and highlights the riskiest assets (`hotlist.txt`) based on new findings.
+- **Attacker-First Mode**: Prioritizes high-impact checks first to reduce time-to-first-critical (`--attacker-first` / `ATTACKER_FIRST_MODE`).
+- **Hotlist Builder**: Scores and highlights the riskiest assets (`hotlist.txt`) using severity, exploitability, criticality, exposure, and novelty; emits detailed factors in `report/hotlist_detailed.json`.
 - **Command Tracing**: Toggle `SHOW_COMMANDS` to log every executed command into target logs for debugging.
 - **Asset Store**: Appends findings to `assets.jsonl` for downstream automation when `ASSET_STORE` is enabled.
 - **Consolidated Report**: Auto-generates `report/report.json` and `report/index.html` at end of scan.
@@ -213,6 +214,10 @@ reconFTW is packed with features to make reconnaissance thorough and efficient. 
 - **Health Check**: Built-in system health check via `--health-check` (also used by Docker `HEALTHCHECK`).
 - **Incremental Mode**: Only scan new findings since last run (`--incremental`).
 - **Adaptive Rate Limiting**: Automatically back off on 429/503 errors (`--adaptive-rate`).
+- **Validation Split**: Separates suspected vs validated findings in report artifacts (`VALIDATION_STRICT`).
+- **Monitor Drift Signals**: Tracks and alerts on DNS, certificate, port, and service deltas in monitor mode.
+- **Remediation Workflow Export**: Generates ticket/ASM-friendly prioritized workflow JSON with ownership/SLA/retest metadata (`report/remediation_workflow.json`).
+- **Governance Guardrails**: Enforces authorization acknowledgement + explicit scope filtering and applies per-program rate/concurrency caps.
 - **Structured Logging**: Optional JSON log output for advanced analysis (`STRUCTURED_LOGGING`).
 - **Input Sanitization**: All user input is sanitized to prevent command injection.
 - **Dry-Run Mode**: Preview what would be executed without running commands (`--dry-run`).
@@ -800,6 +805,24 @@ REPORT_ONLY=false # Rebuild report artifacts from existing results (or use --rep
 QUICK_RESCAN=false # Skip heavy steps if no new subdomains/webs
 CHUNK_LIMIT=2000 # Split very large lists into chunks (urls, webs)
 HOTLIST_TOP=50 # Number of top risky assets to highlight
+ATTACKER_FIRST_MODE=false # Prioritize high-impact checks first
+ATTACKER_FIRST_DEFER_OSINT=true # Push OSINT to secondary phase in attacker-first mode
+ATTACKER_FIRST_NUCLEI_SEVERITY="critical,high" # Fast-pass nuclei severities
+VALIDATION_STRICT=true # Separate suspected vs validated in reports
+RETEST_ON_CHANGE=true # Prioritize retest workflow on monitor deltas
+
+# Governance & Program Safety
+ENFORCE_SCOPE_GUARD=true # Require in-scope filtering (.scope or -i file)
+ENFORCE_AUTHORIZATION_GUARD=true # Require explicit authorization acknowledgement
+AUTHORIZATION_ACKNOWLEDGED=false # Set true or pass --acknowledge-authorization
+PROGRAM_RATE_LIMIT_MAX=300 # Cap per-tool rate limits (0 disables)
+PROGRAM_PARALLEL_MAX_JOBS=6 # Cap parallel workers (0 disables)
+PROGRAM_THREADS_MAX=300 # Cap thread knobs (0 disables)
+REMEDIATION_SLA_CRITICAL_SCORE=60 # Score threshold for shortest SLA
+REMEDIATION_SLA_HIGH_SCORE=35 # Score threshold for medium SLA
+REMEDIATION_SLA_CRITICAL_DAYS=7 # SLA days for critical-score assets
+REMEDIATION_SLA_HIGH_DAYS=14 # SLA days for high-score assets
+REMEDIATION_SLA_DEFAULT_DAYS=30 # SLA days for baseline assets
 
 # Performance
 RESOLVER_IQ=false # Prefer fast/healthy resolvers (experimental)
@@ -888,6 +911,7 @@ reconFTW supports multiple modes and options for flexible reconnaissance. Use th
 | `--quick-rescan`  | Skip heavy modules when no new subs/webs are found       |
 | `--health-check`  | Run system health check and exit                         |
 | `--incremental`   | Only scan new findings since last run                    |
+| `--attacker-first`| Prioritize high-impact checks before secondary phases     |
 | `--adaptive-rate` | Automatically adjust rate limits on errors (429/503)     |
 | `--dry-run`       | Show what would be executed without running commands     |
 | `--parallel`      | Run independent functions in parallel (faster, more RAM) |
@@ -895,6 +919,7 @@ reconFTW supports multiple modes and options for flexible reconnaissance. Use th
 | `--monitor`       | Continuous monitoring mode (single target; `-w` supports `-l`) |
 | `--monitor-interval` | Minutes between monitor cycles                        |
 | `--monitor-cycles`   | Stop after N cycles (0 = infinite)                    |
+| `--acknowledge-authorization` | Confirm authorization for active testing       |
 | `--report-only`   | Rebuild report artifacts without scanning                |
 | `--refresh-cache` | Force refresh of cached resolvers/wordlists              |
 | `--export`        | Export artifacts: `json`, `html`, `csv`, or `all`        |

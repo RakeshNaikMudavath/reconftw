@@ -18,6 +18,7 @@ function start() {
     # Validate configuration before starting
     validate_config || exit $?
     apply_performance_profile
+    enforce_governance_guardrails || exit $?
 
     # Check available disk space before starting (require at least 5GB by default)
     local required_space_gb="${MIN_DISK_SPACE_GB:-5}"
@@ -362,46 +363,116 @@ function end() {
 
 }
 
-function build_hotlist() {
-    mkdir -p .tmp
-    declare -A score
-    # Nuclei high/critical
-    for f in nuclei_output/high_json.txt nuclei_output/critical_json.txt; do
-        [[ -s $f ]] || continue
-        while read -r h; do
-            [[ -z $h ]] && continue
-            score["$h"]=$((${score["$h"]:-0} + 10))
-        done < <(jq -r '.["matched-at"] // .host' "$f" 2>/dev/null)
-    done
-    # Takeovers
-    [[ -s webs/takeover.txt ]] && while read -r h; do score["$h"]=$((${score["$h"]:-0} + 8)); done <webs/takeover.txt
-    # Secrets
-    for s in js/js_secrets.txt js/js_secrets_jsmap.txt js/js_secrets_jsmap_jsluice.txt; do
-        [[ -s $s ]] || continue
-        while read -r h; do score["$h"]=$((${score["$h"]:-0} + 6)); done < <(awk '{print $1}' "$s")
-    done
-    # Favicon technology fingerprints (favirecon)
-    if [[ -s webs/favirecon.txt ]]; then
-        while read -r line; do
-            [[ -z $line ]] && continue
-            host=$(printf '%s' "$line" | awk '{print $1}' | awk -F/ '{print $3}' | sed 's/:.*$//')
-            [[ -z $host ]] && continue
-            score["$host"]=$((${score["$host"]:-0} + 4))
-        done <webs/favirecon.txt
+_extract_host_from_input() {
+    local raw="$1"
+    local host
+    # Normalize mixed scanner lines into a host by stripping tags, protocol, path and port.
+    host=$(printf '%s' "$raw" \
+        | sed -E 's/^\[[^]]*\][[:space:]]*//g; s/^https?:\/\///; s#/.*$##; s/:.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+    [[ -n "$host" ]] && printf '%s\n' "$host"
+}
+
+_host_matches_business_keywords() {
+    local host="$1"
+    [[ "$host" =~ (^|[.-])(admin|auth|login|sso|api|gateway|pay|payment|billing|wallet|account)([.-]|$) ]]
+}
+
+_add_hotlist_risk_factor() {
+    local host="$1"
+    local points="$2"
+    local reason="$3"
+    [[ -z "$host" ]] && return 0
+    score["$host"]=$((${score["$host"]:-0} + points))
+    if [[ -n "${reasons[$host]:-}" ]]; then
+        reasons["$host"]+=",${reason}"
+    else
+        reasons["$host"]="${reason}"
     fi
-    # New assets bonus
-    for p in .tmp/subs_new_only.txt webs/url_extract.txt; do
-        [[ -s $p ]] || continue
-        while read -r l; do
-            host=$(echo "$l" | unfurl -u domains 2>/dev/null)
-            [[ -z $host ]] && continue
-            score["$host"]=$((${score["$host"]:-0} + 2))
-        done <"$p"
+}
+
+function build_hotlist() {
+    mkdir -p .tmp report
+    declare -A score reasons
+
+    # Severity weighting (nuclei).
+    declare -A sev_weight=([critical]=40 [high]=25 [medium]=12 [low]=5 [info]=2)
+    local sev f host normalized_host line ip
+    for sev in critical high medium low info; do
+        f="nuclei_output/${sev}_json.txt"
+        [[ -s "$f" ]] || continue
+        while IFS= read -r host; do
+            normalized_host=$(_extract_host_from_input "$host")
+            _add_hotlist_risk_factor "$normalized_host" "${sev_weight[$sev]}" "severity:${sev}"
+            [[ "$sev" == "critical" || "$sev" == "high" ]] && _add_hotlist_risk_factor "$normalized_host" 8 "validated:nuclei_${sev}"
+        done < <(jq -r '.["matched-at"] // .host // empty' "$f" 2>/dev/null)
     done
-    # Emit hotlist sorted
+
+    # Exploitability signals.
+    [[ -s webs/takeover.txt ]] && while IFS= read -r line; do
+        host=$(_extract_host_from_input "$line")
+        _add_hotlist_risk_factor "$host" 30 "exploitability:takeover"
+    done <webs/takeover.txt
+    [[ -s vulns/4xxbypass.txt ]] && while IFS= read -r line; do
+        host=$(_extract_host_from_input "$line")
+        _add_hotlist_risk_factor "$host" 20 "exploitability:auth_bypass"
+    done <vulns/4xxbypass.txt
+    [[ -s vulns/smuggling.txt ]] && while IFS= read -r line; do
+        host=$(_extract_host_from_input "$line")
+        _add_hotlist_risk_factor "$host" 18 "exploitability:smuggling"
+    done <vulns/smuggling.txt
+    [[ -s vulns/ssrf_callback.txt ]] && while IFS= read -r line; do
+        host=$(_extract_host_from_input "$line")
+        _add_hotlist_risk_factor "$host" 18 "exploitability:ssrf_callback"
+    done <vulns/ssrf_callback.txt
+    for s in js/js_secrets.txt js/js_secrets_jsmap.txt js/js_secrets_jsmap_jsluice.txt; do
+        [[ -s "$s" ]] || continue
+        while IFS= read -r line; do
+            host=$(_extract_host_from_input "$line")
+            _add_hotlist_risk_factor "$host" 15 "exposure:secret_signal"
+        done <"$s"
+    done
+
+    # Asset criticality and exposure.
+    for f in webs/webs_all.txt subdomains/subdomains.txt; do
+        [[ -s "$f" ]] || continue
+        while IFS= read -r line; do
+            normalized_host=$(_extract_host_from_input "$line")
+            [[ -z "$normalized_host" ]] && continue
+            _add_hotlist_risk_factor "$normalized_host" 4 "exposure:internet_reachable"
+            if _host_matches_business_keywords "$normalized_host"; then
+                _add_hotlist_risk_factor "$normalized_host" 12 "criticality:business_surface"
+            fi
+        done <"$f"
+    done
+    if [[ -s hosts/portscan_active.gnmap ]]; then
+        while IFS= read -r line; do
+            ip=$(printf '%s' "$line" | awk '/Host:/{print $2}')
+            _add_hotlist_risk_factor "$ip" 6 "exposure:open_ports"
+        done <hosts/portscan_active.gnmap
+    fi
+
+    # Novelty weighting (new attack surface).
+    for f in .tmp/subs_new_only.txt .tmp/webs_new_only.txt .incremental/history/latest/subdomains_new.txt .incremental/history/latest/webs_new.txt; do
+        [[ -s "$f" ]] || continue
+        while IFS= read -r line; do
+            host=$(_extract_host_from_input "$line")
+            _add_hotlist_risk_factor "$host" 10 "novelty:new_surface"
+        done <"$f"
+    done
+
+    # Emit ranked hotlist and detailed factors.
     {
-        for k in "${!score[@]}"; do printf "%s %s\n" "${score[$k]}" "$k"; done | sort -nr | head -n "${HOTLIST_TOP:-50}"
+        for k in "${!score[@]}"; do
+            printf "%s %s\n" "${score[$k]}" "$k"
+        done | sort -nr | head -n "${HOTLIST_TOP:-50}"
     } >hotlist.txt
+
+    {
+        for k in "${!score[@]}"; do
+            printf '{"asset":"%s","score":%s,"factors":"%s"}\n' "$k" "${score[$k]}" "${reasons[$k]}"
+        done
+    } | jq -s 'sort_by(-.score)' >report/hotlist_detailed.json 2>/dev/null || true
+
     [[ -s hotlist.txt ]] && notification "Hotlist ready (top ${HOTLIST_TOP:-50})" info
 }
 
@@ -726,51 +797,64 @@ function multi_osint() {
 function recon() {
     RECON_PARTIAL_RUN=false
     RECON_OSINT_PARALLEL_FAILURES=0
+    local attacker_first="${ATTACKER_FIRST_MODE:-false}"
+    local defer_osint="${ATTACKER_FIRST_DEFER_OSINT:-true}"
+    local original_nuclei_severity="${NUCLEI_SEVERITY:-info,low,medium,high,critical}"
+    local attacker_first_severity="${ATTACKER_FIRST_NUCLEI_SEVERITY:-critical,high}"
 
-    # Initialize module-level progress (7 modules: OSINT, Subdomains, Web Detection, Web Analysis, Finalization, + 2 optional)
+    # Base modules: OSINT, Subdomains, Web Detection, Web Analysis, Finalization.
+    # Attacker-first adds a dedicated fast-pass module to the progress tracker.
     local module_total=5
+    if [[ "$attacker_first" == "true" ]]; then
+        module_total=6
+    fi
     progress_module_init "$module_total"
 
-    _print_section "OSINT"
+    # Run OSINT immediately unless BOTH attacker-first and deferred-OSINT are enabled.
+    if [[ "$attacker_first" != "true" || "$defer_osint" != "true" ]]; then
+        _print_section "OSINT"
 
-    if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null; then
-        # Group 1: balanced with third_party_misconfigs (slow) alongside fast ones
-        parallel_funcs "${PAR_OSINT_GROUP1_SIZE:-5}" domain_info ip_info emails google_dorks third_party_misconfigs
-        local osint_g1_rc=$?
-        if ((osint_g1_rc > 0)); then
-            RECON_PARTIAL_RUN=true
-            RECON_OSINT_PARALLEL_FAILURES=$((RECON_OSINT_PARALLEL_FAILURES + osint_g1_rc))
+        if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null; then
+            # Group 1: balanced with third_party_misconfigs (slow) alongside fast ones
+            parallel_funcs "${PAR_OSINT_GROUP1_SIZE:-5}" domain_info ip_info emails google_dorks third_party_misconfigs
+            local osint_g1_rc=$?
+            if ((osint_g1_rc > 0)); then
+                RECON_PARTIAL_RUN=true
+                RECON_OSINT_PARALLEL_FAILURES=$((RECON_OSINT_PARALLEL_FAILURES + osint_g1_rc))
+            fi
+            # Group 2: remaining OSINT + zonetransfer
+            parallel_funcs "${PAR_OSINT_GROUP2_SIZE:-5}" github_repos github_leaks github_actions_audit metadata apileaks zonetransfer
+            local osint_g2_rc=$?
+            if ((osint_g2_rc > 0)); then
+                RECON_PARTIAL_RUN=true
+                RECON_OSINT_PARALLEL_FAILURES=$((RECON_OSINT_PARALLEL_FAILURES + osint_g2_rc))
+            fi
+            if [[ "${S3BUCKETS:-false}" != "true" ]]; then
+                cloud_enum_scan
+            fi
+        else
+            domain_info
+            ip_info
+            emails
+            google_dorks
+            #github_dorks
+            github_repos
+            github_leaks
+            github_actions_audit
+            metadata
+            apileaks
+            third_party_misconfigs
+            zonetransfer
+            if [[ "${S3BUCKETS:-false}" != "true" ]]; then
+                cloud_enum_scan
+            fi
         fi
-        # Group 2: remaining OSINT + zonetransfer
-        parallel_funcs "${PAR_OSINT_GROUP2_SIZE:-5}" github_repos github_leaks github_actions_audit metadata apileaks zonetransfer
-        local osint_g2_rc=$?
-        if ((osint_g2_rc > 0)); then
-            RECON_PARTIAL_RUN=true
-            RECON_OSINT_PARALLEL_FAILURES=$((RECON_OSINT_PARALLEL_FAILURES + osint_g2_rc))
-        fi
-        if [[ "${S3BUCKETS:-false}" != "true" ]]; then
-            cloud_enum_scan
-        fi
+
+        ui_module_end "OSINT" "osint/" "subdomains/"
+        progress_module "OSINT"
     else
-        domain_info
-        ip_info
-        emails
-        google_dorks
-        #github_dorks
-        github_repos
-        github_leaks
-        github_actions_audit
-        metadata
-        apileaks
-        third_party_misconfigs
-        zonetransfer
-        if [[ "${S3BUCKETS:-false}" != "true" ]]; then
-            cloud_enum_scan
-        fi
+        notification "Attacker-first mode enabled: deferring OSINT to secondary phase" info
     fi
-
-    ui_module_end "OSINT" "osint/" "subdomains/"
-    progress_module "OSINT"
 
     if [[ $AXIOM == true ]]; then
         axiom_launch
@@ -789,6 +873,19 @@ function recon() {
 
     _print_section "Web Detection"
     run_module_with_axiom_failover webprobe_full
+
+    if [[ "$attacker_first" == "true" ]]; then
+        _print_section "Attacker-First Fast Pass"
+        NUCLEI_SEVERITY="$attacker_first_severity"
+        run_module_with_axiom_failover nuclei_check
+        run_module_with_axiom_failover subtakeover
+        if [[ "${VULNS_GENERAL:-false}" == "true" ]]; then
+            4xxbypass || true
+            command_injection || true
+        fi
+        NUCLEI_SEVERITY="$original_nuclei_severity"
+        progress_module "Attacker-First"
+    fi
 
     if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null && ! axiom_runtime_enabled; then
         parallel_funcs "${PAR_WEB_DETECT_GROUP_SIZE:-3}" screenshot cdnprovider portscan favirecon_tech
@@ -862,6 +959,13 @@ function recon() {
 
     ui_module_end "Finalization" "webs/" "gf/" "cms/"
     progress_module "Finalization"
+
+    if [[ "$attacker_first" == "true" && "$defer_osint" == "true" ]]; then
+        _print_section "OSINT (Secondary Phase)"
+        osint
+        ui_module_end "OSINT Secondary" "osint/" "subdomains/"
+        progress_module "OSINT Secondary"
+    fi
 }
 
 function multi_recon() {
@@ -1420,7 +1524,7 @@ function report_only_mode() {
 function help() {
     pt_header "Usage"
     printf "\n Usage: %s [-d domain.tld] [-m name] [-l list.txt] [-x oos.txt] [-i in.txt] " "$0"
-    printf "\n           	      [-r] [-s] [-p] [-a] [-w] [-n] [-z] [-c] [-y] [-h] [-f] [--ai] [--deep] [--monitor] [--monitor-interval m] [--monitor-cycles n] [--vps-count n] [--report-only] [--refresh-cache] [--gen-resolvers] [--force] [--export fmt] [-o OUTPUT]\n\n"
+    printf "\n           	      [-r] [-s] [-p] [-a] [-w] [-n] [-z] [-c] [-y] [-h] [-f] [--ai] [--deep] [--attacker-first] [--acknowledge-authorization] [--monitor] [--monitor-interval m] [--monitor-cycles n] [--vps-count n] [--report-only] [--refresh-cache] [--gen-resolvers] [--force] [--export fmt] [-o OUTPUT]\n\n"
     printf " %bTARGET OPTIONS%b\n" "${bblue}" "${reset}"
     printf "   -d domain.tld     Target domain\n"
     printf "   -m company        Target company name\n"
@@ -1451,6 +1555,7 @@ function help() {
     printf "   --health-check    Run system health check and exit\n"
     printf "   --quick-rescan    Skip heavy steps if no new subs/webs this run\n"
     printf "   --incremental     Only scan new findings since last run\n"
+    printf "   --attacker-first  Prioritize high-impact checks for faster critical findings\n"
     printf "   --adaptive-rate   Automatically adjust rate limits on errors (429/503)\n"
     printf "   --dry-run         Show what would be executed without running commands\n"
     printf "   --quiet           Minimal output (errors and final summary only)\n"
@@ -1465,6 +1570,7 @@ function help() {
     printf "   --monitor         Continuous monitoring mode (single target; -w supports -l)\n"
     printf "   --monitor-interval Minutes between cycles (default: 60)\n"
     printf "   --monitor-cycles  Stop after N cycles (0 = infinite)\n"
+    printf "   --acknowledge-authorization Confirm you are authorized to test configured scope\n"
     printf "   --report-only     Rebuild report artifacts from existing Recon/<target>\n"
     printf "   --no-report       Disable report generation and exports\n"
     printf "   --refresh-cache   Force refresh of cached resolvers/wordlists\n"

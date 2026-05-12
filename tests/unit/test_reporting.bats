@@ -59,3 +59,20 @@ JSON
   [ -f report/report.json ]
   [[ "$output" != *"No such file or directory"* ]]
 }
+
+@test "report includes executive and engineering views with validation artifacts" {
+  mkdir -p vulns js
+  echo "a.example.com" > webs/takeover.txt
+  echo "https://a.example.com" > vulns/4xxbypass.txt
+  echo "https://a.example.com token=abc" > js/js_secrets.txt
+
+  run generate_consolidated_report
+  [ "$status" -eq 0 ]
+  [ -f report/validation_summary.json ]
+  [ -f report/remediation_workflow.json ]
+  [ -f report/secrets_exposure.json ]
+  [ -f report/asset_context.jsonl ]
+  grep -q '"executive_view"' report/report.json
+  grep -q '"engineering_view"' report/report.json
+  grep -q '"validation"' report/report.json
+}

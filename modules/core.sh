@@ -1032,7 +1032,11 @@ function monitor_snapshot() {
     local src
     for src in \
         "subdomains/subdomains.txt" \
+        "subdomains/subdomains_dnsregs.txt" \
+        "subdomains/subdomains_tls.txt" \
         "webs/webs_all.txt" \
+        "hosts/portscan_active.gnmap" \
+        "hosts/service_fingerprints.jsonl" \
         "report/report.json" \
         "hotlist.txt"; do
         if [[ -s "$src" ]]; then
@@ -1054,7 +1058,7 @@ function monitor_snapshot() {
         prev_dir=$(cd "$prev_link" 2>/dev/null && pwd -P || true)
     fi
 
-    local subs_new=0 webs_new=0
+    local subs_new=0 webs_new=0 dns_new=0 cert_new=0 ports_new=0 services_new=0
     local critical_new=0 high_new=0 medium_new=0 low_new=0 info_new=0
     local nuclei_new_total=0 delta_total=0
     if [[ -n "$prev_dir" ]]; then
@@ -1065,6 +1069,22 @@ function monitor_snapshot() {
         if [[ -s "$snap/webs_all.txt" ]] && [[ -s "$prev_dir/webs_all.txt" ]]; then
             comm -13 <(sort -u "$prev_dir/webs_all.txt") <(sort -u "$snap/webs_all.txt") >"$snap/webs_new.txt"
             webs_new=$(wc -l <"$snap/webs_new.txt" 2>/dev/null | tr -d ' ')
+        fi
+        if [[ -s "$snap/subdomains_dnsregs.txt" ]] && [[ -s "$prev_dir/subdomains_dnsregs.txt" ]]; then
+            comm -13 <(sort -u "$prev_dir/subdomains_dnsregs.txt") <(sort -u "$snap/subdomains_dnsregs.txt") >"$snap/dns_new.txt"
+            dns_new=$(wc -l <"$snap/dns_new.txt" 2>/dev/null | tr -d ' ')
+        fi
+        if [[ -s "$snap/subdomains_tls.txt" ]] && [[ -s "$prev_dir/subdomains_tls.txt" ]]; then
+            comm -13 <(sort -u "$prev_dir/subdomains_tls.txt") <(sort -u "$snap/subdomains_tls.txt") >"$snap/certs_new.txt"
+            cert_new=$(wc -l <"$snap/certs_new.txt" 2>/dev/null | tr -d ' ')
+        fi
+        if [[ -s "$snap/portscan_active.gnmap" ]] && [[ -s "$prev_dir/portscan_active.gnmap" ]]; then
+            comm -13 <(sort -u "$prev_dir/portscan_active.gnmap") <(sort -u "$snap/portscan_active.gnmap") >"$snap/ports_new.txt"
+            ports_new=$(wc -l <"$snap/ports_new.txt" 2>/dev/null | tr -d ' ')
+        fi
+        if [[ -s "$snap/service_fingerprints.jsonl" ]] && [[ -s "$prev_dir/service_fingerprints.jsonl" ]]; then
+            comm -13 <(sort -u "$prev_dir/service_fingerprints.jsonl") <(sort -u "$snap/service_fingerprints.jsonl") >"$snap/services_new.txt"
+            services_new=$(wc -l <"$snap/services_new.txt" 2>/dev/null | tr -d ' ')
         fi
         for sev in "${monitor_severities[@]}"; do
             local sev_new_file="$snap/${sev}_new.txt"
@@ -1086,6 +1106,10 @@ function monitor_snapshot() {
         # Baseline cycle: don't alert as "new", just record baseline.
         subs_new=0
         webs_new=0
+        dns_new=0
+        cert_new=0
+        ports_new=0
+        services_new=0
         critical_new=0
         high_new=0
         medium_new=0
@@ -1096,13 +1120,17 @@ function monitor_snapshot() {
 
     subs_new=${subs_new:-0}
     webs_new=${webs_new:-0}
+    dns_new=${dns_new:-0}
+    cert_new=${cert_new:-0}
+    ports_new=${ports_new:-0}
+    services_new=${services_new:-0}
     critical_new=${critical_new:-0}
     high_new=${high_new:-0}
     medium_new=${medium_new:-0}
     low_new=${low_new:-0}
     info_new=${info_new:-0}
     nuclei_new_total=${nuclei_new_total:-0}
-    delta_total=$((subs_new + webs_new + nuclei_new_total))
+    delta_total=$((subs_new + webs_new + dns_new + cert_new + ports_new + services_new + nuclei_new_total))
     if command -v jq >/dev/null 2>&1; then
         jq -n \
             --arg ts "$(date -Iseconds)" \
@@ -1111,6 +1139,10 @@ function monitor_snapshot() {
             --arg min_sev "${MONITOR_MIN_SEVERITY:-high}" \
             --argjson subs_new "$subs_new" \
             --argjson webs_new "$webs_new" \
+            --argjson dns_new "$dns_new" \
+            --argjson cert_new "$cert_new" \
+            --argjson ports_new "$ports_new" \
+            --argjson services_new "$services_new" \
             --argjson critical_new "$critical_new" \
             --argjson high_new "$high_new" \
             --argjson medium_new "$medium_new" \
@@ -1126,6 +1158,10 @@ function monitor_snapshot() {
                 deltas:{
                     subdomains_new:$subs_new,
                     webs_new:$webs_new,
+                    dns_new:$dns_new,
+                    certs_new:$cert_new,
+                    ports_new:$ports_new,
+                    services_new:$services_new,
                     high_findings_new:$high_new,
                     critical_findings_new:$critical_new,
                     medium_findings_new:$medium_new,
@@ -1152,6 +1188,9 @@ function monitor_snapshot() {
         fi
         if [[ "${subs_u:-0}" -gt 0 || "${webs_u:-0}" -gt 0 ]]; then
             notification "New assets detected: subdomains=${subs_u:-0}, webs=${webs_u:-0}" good
+        fi
+        if [[ "${dns_new:-0}" -gt 0 || "${cert_new:-0}" -gt 0 || "${ports_new:-0}" -gt 0 || "${services_new:-0}" -gt 0 ]]; then
+            notification "Infrastructure drift detected: dns=${dns_new:-0}, certs=${cert_new:-0}, ports=${ports_new:-0}, services=${services_new:-0}" warn
         fi
         if [[ "${nuclei_u:-0}" -eq 0 && "${subs_u:-0}" -eq 0 && "${webs_u:-0}" -eq 0 ]]; then
             notification "Monitor detected deltas but all were suppressed by fingerprint history" info
@@ -1756,18 +1795,186 @@ sanitize_control_chars() {
     LC_ALL=C tr -d '\000-\010\013\014\016-\037'
 }
 
+_asset_tags_for_host() {
+    local host="${1,,}"
+    local tags=()
+    _host_matches_tokens() {
+        local input="$1" tokens="$2"
+        [[ "$input" =~ (^|[.-])(${tokens})([.-]|$) ]]
+    }
+    _host_matches_tokens "$host" "admin|portal|dashboard" && tags+=("admin")
+    _host_matches_tokens "$host" "auth|login|signin|idp" && tags+=("login")
+    _host_matches_tokens "$host" "api|gateway|graphql" && tags+=("api")
+    _host_matches_tokens "$host" "sso|oauth|openid|okta" && tags+=("sso")
+    _host_matches_tokens "$host" "pay|payment|billing|wallet" && tags+=("payment")
+    _host_matches_tokens "$host" "s3|bucket|storage|blob|minio" && tags+=("cloud_storage")
+    if [[ ${#tags[@]} -eq 0 ]]; then
+        printf 'general\n'
+    else
+        printf '%s\n' "${tags[@]}" | sort -u
+    fi
+}
+
+build_asset_context_report() {
+    ensure_dirs report || return 1
+    local out="report/asset_context.jsonl"
+    : >"$out"
+    [[ ! -s subdomains/subdomains.txt && ! -s webs/webs_all.txt ]] && return 0
+
+    local host
+    {
+        [[ -s subdomains/subdomains.txt ]] && cat subdomains/subdomains.txt
+        [[ -s webs/webs_all.txt ]] && sed -E 's#^https?://##; s#/.*$##; s/:.*$##' webs/webs_all.txt
+    } | sed '/^$/d' | sort -u | while IFS= read -r host; do
+        local tags_json='[]'
+        tags_json=$( _asset_tags_for_host "$host" | jq -R . | jq -s . 2>/dev/null || echo '["general"]' )
+        local exposed=false weak_signal=false
+        grep -Fq "$host" webs/webs_all.txt 2>/dev/null && exposed=true
+        grep -Fq "$host" webs/takeover.txt 2>/dev/null && weak_signal=true
+        grep -Fq "$host" vulns/4xxbypass.txt 2>/dev/null && weak_signal=true
+        grep -Fq "$host" nuclei_output/critical.txt 2>/dev/null && weak_signal=true
+        jq -cn \
+            --arg asset "$host" \
+            --argjson tags "$tags_json" \
+            --argjson exposed "$exposed" \
+            --argjson weak "$weak_signal" \
+            '{asset:$asset,tags:$tags,exposure:{internet:$exposed},signals:{weak_protection:$weak}}' >>"$out" 2>/dev/null \
+            || log_note "asset context entry failed for host=${host}" "${FUNCNAME[0]}" "${LINENO}"
+    done
+}
+
+build_validation_summary() {
+    ensure_dirs report || return 1
+    local out="report/validation_summary.json"
+    local validated=0 suspected=0
+
+    validated=$((validated + $(count_lines "webs/takeover.txt")))
+    validated=$((validated + $(count_lines "vulns/4xxbypass.txt")))
+    validated=$((validated + $(count_lines "vulns/ssrf_callback.txt")))
+    validated=$((validated + $(count_lines "vulns/ssti.txt")))
+    validated=$((validated + $(count_lines "nuclei_output/high.txt")))
+    validated=$((validated + $(count_lines "nuclei_output/critical.txt")))
+
+    suspected=$((suspected + $(count_lines "nuclei_output/info.txt")))
+    suspected=$((suspected + $(count_lines "nuclei_output/low.txt")))
+    suspected=$((suspected + $(count_lines "nuclei_output/medium.txt")))
+    suspected=$((suspected + $(count_lines "vulns/fuzzparams.txt")))
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -n \
+            --arg strict "${VALIDATION_STRICT:-true}" \
+            --argjson validated "${validated:-0}" \
+            --argjson suspected "${suspected:-0}" \
+            '{strict:($strict=="true"),validated_count:$validated,suspected_count:$suspected}' >"$out"
+    else
+        printf '{"strict":%s,"validated_count":%s,"suspected_count":%s}\n' \
+            "${VALIDATION_STRICT:-true}" "${validated:-0}" "${suspected:-0}" >"$out"
+    fi
+}
+
+build_secrets_exposure_report() {
+    ensure_dirs report || return 1
+    local out="report/secrets_exposure.json"
+    local files_count=0 findings_count=0 recurring_count=0 mapped_assets=0
+    local tmp_all=".tmp/secrets_all.txt" tmp_domains=".tmp/secrets_domains.txt"
+    : >"$tmp_all"
+    : >"$tmp_domains"
+
+    local f
+    for f in js/js_secrets.txt js/js_secrets_jsmap.txt js/js_secrets_jsmap_jsluice.txt osint/*leak* osint/*secret*; do
+        [[ -s "$f" ]] || continue
+        files_count=$((files_count + 1))
+        cat "$f" >>"$tmp_all"
+    done
+    findings_count=$(wc -l <"$tmp_all" 2>/dev/null | tr -d ' ')
+    # Domain-like extraction intentionally keeps broad matching because leak files are often mixed blobs
+    # (HTTP logs, stack traces, JSON snippets, token strings, callback payloads). We over-collect first,
+    # then count recurring domains and intersect with discovered assets to reduce false-positive impact.
+    awk '
+        {
+            line=$0
+            while (match(line, /[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z]{2,}/)) {
+                d=substr(line, RSTART, RLENGTH)
+                c[d]++
+                line=substr(line, RSTART + RLENGTH)
+            }
+        }
+        END {
+            for (d in c) if (c[d] > 1) print d
+        }
+    ' "$tmp_all" | sort -u >"$tmp_domains" 2>/dev/null || true
+    recurring_count=$(wc -l <"$tmp_domains" 2>/dev/null | tr -d ' ')
+    if [[ -s subdomains/subdomains.txt ]]; then
+        mapped_assets=$(comm -12 <(sort -u "$tmp_domains") <(sort -u subdomains/subdomains.txt) | wc -l | tr -d ' ')
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -n \
+            --argjson files "$files_count" \
+            --argjson findings "${findings_count:-0}" \
+            --argjson recurring "${recurring_count:-0}" \
+            --argjson mapped "${mapped_assets:-0}" \
+            '{files_scanned:$files,total_findings:$findings,recurring_patterns:$recurring,mapped_assets:$mapped}' >"$out"
+    else
+        printf '{"files_scanned":%s,"total_findings":%s,"recurring_patterns":%s,"mapped_assets":%s}\n' \
+            "$files_count" "${findings_count:-0}" "${recurring_count:-0}" "${mapped_assets:-0}" >"$out"
+    fi
+}
+
+build_remediation_workflow_report() {
+    ensure_dirs report || return 1
+    local out="report/remediation_workflow.json"
+    local workflow_items='[]'
+    local retest_required=false
+    [[ -s ".incremental/history/latest/delta.json" ]] && retest_required=true
+
+    if [[ -s hotlist.txt ]] && command -v jq >/dev/null 2>&1; then
+        local critical_score="${REMEDIATION_SLA_CRITICAL_SCORE:-60}"
+        local high_score="${REMEDIATION_SLA_HIGH_SCORE:-35}"
+        local critical_days="${REMEDIATION_SLA_CRITICAL_DAYS:-7}"
+        local high_days="${REMEDIATION_SLA_HIGH_DAYS:-14}"
+        local default_days="${REMEDIATION_SLA_DEFAULT_DAYS:-30}"
+        workflow_items=$(head -n "${HOTLIST_TOP:-50}" hotlist.txt \
+            | awk '{score=$1; $1=""; sub(/^ /,"",$0); printf "{\"asset\":\"%s\",\"score\":%s}\n",$0,score}' \
+            | jq --argjson critical_score "$critical_score" \
+                --argjson high_score "$high_score" \
+                --argjson critical_days "$critical_days" \
+                --argjson high_days "$high_days" \
+                --argjson default_days "$default_days" -s 'map(. + {
+                owner:"unassigned",
+                status:"open",
+                sla_days:(if .score >= $critical_score then $critical_days elif .score >= $high_score then $high_days else $default_days end),
+                retest_status:(if .score >= $critical_score then "priority" else "scheduled" end)
+            })')
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -n \
+            --argjson items "$workflow_items" \
+            --argjson retest "$retest_required" \
+            '{pipeline:"ticketing_asm_export",retest_required:$retest,items:$items}' >"$out"
+    else
+        printf '{"pipeline":"ticketing_asm_export","retest_required":%s}\n' "$retest_required" >"$out"
+    fi
+}
+
 # Generate consolidated JSON + HTML report for the current scan.
 # Outputs:
 #   - report/report.json
 #   - report/index.html
 function generate_consolidated_report() {
     ensure_dirs report || return 1
+    build_asset_context_report || true
+    build_validation_summary || true
+    build_secrets_exposure_report || true
+    build_remediation_workflow_report || true
 
     local report_json="report/report.json"
     local report_html="report/index.html"
     local subs_count webs_count hosts_count screenshots_count findings_total
     local sev_info sev_low sev_medium sev_high sev_critical
     local top_assets_json timeline_json links_json monitor_delta_json monitor_alerts_json
+    local validation_json secrets_json remediation_json asset_context_json
 
     subs_count=$(count_lines "subdomains/subdomains.txt")
     webs_count=$(count_lines "webs/webs_all.txt")
@@ -1831,8 +2038,13 @@ function generate_consolidated_report() {
                     "Nuclei Critical|nuclei_output/critical.txt" \
                     "Nuclei High|nuclei_output/high.txt" \
                     "Hotlist|hotlist.txt" \
+                    "Hotlist Detailed|report/hotlist_detailed.json" \
                     "Performance Summary|.log/perf_summary.json" \
                     "Assets JSONL|assets.jsonl" \
+                    "Asset Context|report/asset_context.jsonl" \
+                    "Validation Summary|report/validation_summary.json" \
+                    "Secrets Exposure|report/secrets_exposure.json" \
+                    "Remediation Workflow|report/remediation_workflow.json" \
                     "Screenshots Changed|screenshots/diff_changed.txt" \
                     "Latest Report JSON|report/latest/report.json" \
                     "Latest Report HTML|report/latest/index.html"; do
@@ -1858,6 +2070,26 @@ function generate_consolidated_report() {
         else
             monitor_alerts_json='{}'
         fi
+        if [[ -s "report/validation_summary.json" ]]; then
+            validation_json=$(cat "report/validation_summary.json")
+        else
+            validation_json='{}'
+        fi
+        if [[ -s "report/secrets_exposure.json" ]]; then
+            secrets_json=$(cat "report/secrets_exposure.json")
+        else
+            secrets_json='{}'
+        fi
+        if [[ -s "report/remediation_workflow.json" ]]; then
+            remediation_json=$(cat "report/remediation_workflow.json")
+        else
+            remediation_json='{}'
+        fi
+        if [[ -s "report/asset_context.jsonl" ]]; then
+            asset_context_json=$(jq -s '.' report/asset_context.jsonl 2>/dev/null || echo '[]')
+        else
+            asset_context_json='[]'
+        fi
 
         jq -n \
             --arg generated_at "$(date -Iseconds)" \
@@ -1869,6 +2101,7 @@ function generate_consolidated_report() {
             --arg incremental "${INCREMENTAL_MODE:-false}" \
             --arg parallel "${PARALLEL_MODE:-true}" \
             --arg axiom "${AXIOM:-false}" \
+            --arg attacker_first "${ATTACKER_FIRST_MODE:-false}" \
             --argjson subs "$subs_count" \
             --argjson webs "$webs_count" \
             --argjson hosts "$hosts_count" \
@@ -1884,6 +2117,10 @@ function generate_consolidated_report() {
             --argjson links "$links_json" \
             --argjson delta "$monitor_delta_json" \
             --argjson alerts "$monitor_alerts_json" \
+            --argjson validation "$validation_json" \
+            --argjson secrets "$secrets_json" \
+            --argjson remediation "$remediation_json" \
+            --argjson asset_context "$asset_context_json" \
             '{
                 generated_at:$generated_at,
                 domain:$domain,
@@ -1894,7 +2131,8 @@ function generate_consolidated_report() {
                     quick_rescan:($quick_rescan == "true"),
                     incremental:($incremental == "true"),
                     parallel:($parallel != "false"),
-                    axiom:($axiom == "true")
+                    axiom:($axiom == "true"),
+                    attacker_first:($attacker_first == "true")
                 },
                 summary:{
                     subdomains:$subs,
@@ -1914,7 +2152,23 @@ function generate_consolidated_report() {
                 timeline:$timeline,
                 links:$links,
                 delta_since_last:$delta,
-                alerts_last:$alerts
+                alerts_last:$alerts,
+                validation:$validation,
+                secrets_exposure:$secrets,
+                remediation_workflow:$remediation,
+                asset_context:$asset_context,
+                executive_view:{
+                    critical_open_count:$sev_critical,
+                    high_open_count:$sev_high,
+                    risk_trend_signal:(if ($delta.deltas.critical_findings_new // 0) > 0 or ($delta.deltas.high_findings_new // 0) > 0 then "up" else "stable" end),
+                    mttr_hint_days:(if $sev_critical > 0 then 7 elif $sev_high > 0 then 14 else 30 end)
+                },
+                engineering_view:{
+                    top_assets:$top_assets,
+                    validation:$validation,
+                    remediation:$remediation,
+                    evidence_links:$links
+                }
             }' >"$report_json"
     else
         printf '{"generated_at":"%s","domain":"%s","mode":"%s","runtime":"%s"}\n' \
@@ -1963,6 +2217,10 @@ function generate_consolidated_report() {
     <div class="card"><table><thead><tr><th>Asset</th><th>Score</th></tr></thead><tbody id="topAssets"></tbody></table></div>
     <h2>Delta Since Last Run</h2>
     <div class="sev" id="delta"></div>
+    <h2>Executive View</h2>
+    <div class="sev" id="executive"></div>
+    <h2>Engineering View</h2>
+    <div class="sev" id="engineering"></div>
     <h2>Timeline</h2>
     <div class="card"><table><thead><tr><th>Timestamp</th><th>Level</th><th>Function</th><th>Message</th></tr></thead><tbody id="timeline"></tbody></table></div>
     <h2>Quick Links</h2>
@@ -1975,7 +2233,11 @@ function generate_consolidated_report() {
     document.getElementById('meta').textContent =
       "Domain: " + (REPORT.domain||"n/a") + " | Mode: " + (REPORT.mode||"n/a") + " | Runtime: " + (REPORT.runtime||"n/a") + " | Generated: " + (REPORT.generated_at||"");
     const kpis = [
-      ["Subdomains", s.subdomains||0],["Webs", s.webs||0],["Hosts", s.hosts||0],["Screenshots", s.screenshots||0],["Findings", s.findings_total||0]
+      ["Subdomains", s.subdomains||0],
+      ["Webs", s.webs||0],
+      ["Hosts", s.hosts||0],
+      ["Screenshots", s.screenshots||0],
+      ["Findings", s.findings_total||0]
     ];
     document.getElementById('kpis').innerHTML = kpis.map(([k,v]) => '<div class="card"><div class="muted">'+k+'</div><div class="kpi">'+v+'</div></div>').join('');
     document.getElementById('severities').innerHTML =
@@ -1984,7 +2246,20 @@ function generate_consolidated_report() {
     document.getElementById('topAssets').innerHTML = (REPORT.top_assets||[]).map(x => '<tr><td>'+x.asset+'</td><td>'+x.score+'</td></tr>').join('') || '<tr><td colspan="2">No data</td></tr>';
     const d = (REPORT.delta_since_last && REPORT.delta_since_last.deltas) ? REPORT.delta_since_last.deltas : {};
     document.getElementById('delta').innerHTML =
-      [["New Subdomains",d.subdomains_new||0],["New Webs",d.webs_new||0],["New High",d.high_findings_new||0],["New Critical",d.critical_findings_new||0]]
+      [["New Subdomains",d.subdomains_new||0],["New Webs",d.webs_new||0],["New DNS",d.dns_new||0],["New Certs",d.certs_new||0],["New Ports",d.ports_new||0],["New Services",d.services_new||0],["New High",d.high_findings_new||0],["New Critical",d.critical_findings_new||0]]
+      .map(([k,v]) => '<span class="pill">'+k+': '+v+'</span>').join('');
+    const ex = REPORT.executive_view || {};
+    document.getElementById('executive').innerHTML =
+      [["Critical Open",ex.critical_open_count||0],["High Open",ex.high_open_count||0],["Risk Trend",ex.risk_trend_signal||"stable"],["MTTR Hint Days",ex.mttr_hint_days||0]]
+      .map(([k,v]) => '<span class="pill">'+k+': '+v+'</span>').join('');
+    const eng = REPORT.engineering_view || {};
+    const validation = eng.validation || {};
+    document.getElementById('engineering').innerHTML =
+      [
+        ["Validated",validation.validated_count||0],
+        ["Suspected",validation.suspected_count||0],
+        ["Remediation Items",((eng.remediation||{}).items||[]).length]
+      ]
       .map(([k,v]) => '<span class="pill">'+k+': '+v+'</span>').join('');
     document.getElementById('timeline').innerHTML = (REPORT.timeline||[]).slice(-40).reverse().map(x =>
       '<tr><td>'+ (x.timestamp||'') +'</td><td>'+ (x.level||'') +'</td><td>'+ (x.function||'') +'</td><td>'+ (x.message||'') +'</td></tr>'
