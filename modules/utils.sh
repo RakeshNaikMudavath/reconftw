@@ -169,6 +169,57 @@ function validate_config() {
     if [[ $warnings -gt 0 ]]; then
         print_notice INFO "config" "Configuration has ${warnings} warning(s)."
     fi
+}
+
+function enforce_governance_guardrails() {
+    # Skip execution guards for non-executing pathways.
+    if [[ "${DRY_RUN:-false}" == "true" ]] || [[ "${REPORT_ONLY:-false}" == "true" ]] || [[ "${HEALTH_CHECK:-false}" == "true" ]]; then
+        return 0
+    fi
+
+    if [[ "${ENFORCE_AUTHORIZATION_GUARD:-true}" == "true" ]] && [[ "${AUTHORIZATION_ACKNOWLEDGED:-false}" != "true" ]]; then
+        _print_error "Authorization acknowledgement required. Re-run with --acknowledge-authorization or set AUTHORIZATION_ACKNOWLEDGED=true."
+        return "$E_PERMISSION"
+    fi
+
+    if [[ "${ENFORCE_SCOPE_GUARD:-true}" == "true" ]]; then
+        local scope_ok=false
+        [[ -n "${inScope_file:-}" ]] && scope_ok=true
+        [[ "${INSCOPE:-false}" == "true" ]] && scope_ok=true
+        [[ -s "${SCRIPTPATH}/.scope" ]] && scope_ok=true
+        if [[ "$scope_ok" != "true" ]]; then
+            _print_error "Scope guard enabled: provide -i <in-scope file>, set INSCOPE=true with .scope, or disable ENFORCE_SCOPE_GUARD."
+            return "$E_PERMISSION"
+        fi
+    fi
+
+    # Program-level safety caps (fail-soft, auto-clamp).
+    local cap_rate="${PROGRAM_RATE_LIMIT_MAX:-0}"
+    if [[ "$cap_rate" =~ ^[0-9]+$ ]] && [[ "$cap_rate" -gt 0 ]]; then
+        for rvar in NUCLEI_RATELIMIT HTTPX_RATELIMIT FFUF_RATELIMIT DNSX_RATE_LIMIT NAABU_RATE; do
+            if [[ -n "${!rvar:-}" ]] && [[ "${!rvar}" =~ ^[0-9]+$ ]] && [[ "${!rvar}" -gt "$cap_rate" ]]; then
+                printf -v "$rvar" '%s' "$cap_rate"
+                print_notice WARN "governance" "Clamped ${rvar} to PROGRAM_RATE_LIMIT_MAX=${cap_rate}"
+            fi
+        done
+    fi
+
+    local cap_jobs="${PROGRAM_PARALLEL_MAX_JOBS:-0}"
+    if [[ "$cap_jobs" =~ ^[0-9]+$ ]] && [[ "$cap_jobs" -gt 0 ]] && [[ "${PARALLEL_MAX_JOBS:-0}" =~ ^[0-9]+$ ]] && [[ "${PARALLEL_MAX_JOBS:-0}" -gt "$cap_jobs" ]]; then
+        PARALLEL_MAX_JOBS="$cap_jobs"
+        print_notice WARN "governance" "Clamped PARALLEL_MAX_JOBS to ${cap_jobs}"
+    fi
+
+    local cap_threads="${PROGRAM_THREADS_MAX:-0}"
+    if [[ "$cap_threads" =~ ^[0-9]+$ ]] && [[ "$cap_threads" -gt 0 ]]; then
+        for tvar in FFUF_THREADS HTTPX_THREADS HTTPX_UNCOMMONPORTS_THREADS KATANA_THREADS DALFOX_THREADS DNSX_THREADS TLSX_THREADS; do
+            if [[ -n "${!tvar:-}" ]] && [[ "${!tvar}" =~ ^[0-9]+$ ]] && [[ "${!tvar}" -gt "$cap_threads" ]]; then
+                printf -v "$tvar" '%s' "$cap_threads"
+                print_notice WARN "governance" "Clamped ${tvar} to PROGRAM_THREADS_MAX=${cap_threads}"
+            fi
+        done
+    fi
+
     return 0
 }
 

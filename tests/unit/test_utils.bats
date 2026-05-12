@@ -84,6 +84,41 @@ setup() {
     [[ "$output" == *"AXIOM_FLEET_COUNT must be numeric"* ]]
 }
 
+@test "enforce_governance_guardrails blocks unauthenticated active runs" {
+    export DRY_RUN=false
+    export REPORT_ONLY=false
+    export HEALTH_CHECK=false
+    export ENFORCE_AUTHORIZATION_GUARD=true
+    export AUTHORIZATION_ACKNOWLEDGED=false
+    export ENFORCE_SCOPE_GUARD=false
+    run enforce_governance_guardrails
+    [ "$status" -eq "$E_PERMISSION" ]
+}
+
+@test "enforce_governance_guardrails clamps unsafe rate and thread settings" {
+    export DRY_RUN=false
+    export REPORT_ONLY=false
+    export HEALTH_CHECK=false
+    export ENFORCE_AUTHORIZATION_GUARD=true
+    export AUTHORIZATION_ACKNOWLEDGED=true
+    export ENFORCE_SCOPE_GUARD=false
+    export PROGRAM_RATE_LIMIT_MAX=100
+    export PROGRAM_THREADS_MAX=50
+    export PROGRAM_PARALLEL_MAX_JOBS=3
+    export NUCLEI_RATELIMIT=500
+    export HTTPX_RATELIMIT=300
+    export FFUF_THREADS=500
+    export HTTPX_THREADS=250
+    export PARALLEL_MAX_JOBS=9
+    run enforce_governance_guardrails
+    [ "$status" -eq 0 ]
+    [ "$NUCLEI_RATELIMIT" -eq 100 ]
+    [ "$HTTPX_RATELIMIT" -eq 100 ]
+    [ "$FFUF_THREADS" -eq 50 ]
+    [ "$HTTPX_THREADS" -eq 50 ]
+    [ "$PARALLEL_MAX_JOBS" -eq 3 ]
+}
+
 @test "validate_config accepts PERMUTATIONS_ENGINE=gotator without warning" {
     export PERMUTATIONS_ENGINE="gotator"
     run validate_config

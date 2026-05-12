@@ -156,7 +156,7 @@ fi
 
 CLI_ARGS=()
 mapfile -d '' -t CLI_ARGS < <(normalize_vps_count_args "$@")
-PROGARGS=$(getopt -o 'd:m:l:x:i:o:f:q:c:zrspanwvyh' --long 'domain:,list:,recon,subdomains,passive,all,web,osint,zen,deep,help,vps,vps-count:,ai,check-tools,health-check,quick-rescan,incremental,adaptive-rate,dry-run,parallel,no-parallel,monitor,monitor-interval:,monitor-cycles:,refresh-cache,gen-resolvers,force,export:,report-only,no-report,parallel-log:,quiet,verbose,no-color,log-format:,show-cache,banner,no-banner,legal' -n 'reconFTW' -- "${CLI_ARGS[@]}")
+PROGARGS=$(getopt -o 'd:m:l:x:i:o:f:q:c:zrspanwvyh' --long 'domain:,list:,recon,subdomains,passive,all,web,osint,zen,deep,help,vps,vps-count:,ai,check-tools,health-check,quick-rescan,incremental,adaptive-rate,dry-run,parallel,no-parallel,monitor,monitor-interval:,monitor-cycles:,refresh-cache,gen-resolvers,force,export:,report-only,no-report,parallel-log:,quiet,verbose,no-color,log-format:,show-cache,banner,no-banner,legal,attacker-first,acknowledge-authorization' -n 'reconFTW' -- "${CLI_ARGS[@]}")
 
 exit_status=$?
 if [[ $exit_status -ne 0 ]]; then
@@ -409,6 +409,16 @@ while true; do
             shift 2
             continue
             ;;
+        '--attacker-first')
+            CLI_ATTACKER_FIRST_MODE=true
+            shift
+            continue
+            ;;
+        '--acknowledge-authorization')
+            CLI_AUTHORIZATION_ACKNOWLEDGED=true
+            shift
+            continue
+            ;;
         '--refresh-cache')
             CLI_CACHE_REFRESH=true
             shift
@@ -560,8 +570,14 @@ fi
 if [[ "${CLI_INCREMENTAL_MODE:-false}" == "true" ]]; then
     INCREMENTAL_MODE=true
 fi
+if [[ "${CLI_ATTACKER_FIRST_MODE:-false}" == "true" ]]; then
+    ATTACKER_FIRST_MODE=true
+fi
 if [[ "${CLI_ADAPTIVE_RATE_LIMIT:-false}" == "true" ]]; then
     ADAPTIVE_RATE_LIMIT=true
+fi
+if [[ "${CLI_AUTHORIZATION_ACKNOWLEDGED:-false}" == "true" ]]; then
+    AUTHORIZATION_ACKNOWLEDGED=true
 fi
 if [[ "${CLI_DRY_RUN:-false}" == "true" ]]; then
     DRY_RUN=true
